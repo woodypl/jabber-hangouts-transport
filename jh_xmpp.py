@@ -364,13 +364,6 @@ class Transport:
                                 # Remove from the main list
                                 if fromjid in self.userlist[fromstripped]['connected_jids']:
                                     del self.userlist[fromstripped]['connected_jids'][fromjid]
-                                    if len(self.userlist[fromstripped]['connected_jids']) == 0:
-                                        # Removed resource was the last one:
-                                        # disconnect Hangout and delete the associated thread.
-                                        jh_hangups.hangups_manager.send_message(fromstripped, {'what': 'disconnect'})
-                                        hobj = self.userlist[fromstripped]
-                                        del self.userlist[fromstripped]
-                                        del hobj
                             else:
                                 self.jabber.send(Presence(to=fromjid, frm=config.jid, typ='unavailable'))
 
@@ -426,14 +419,14 @@ class Transport:
 
             # Spawn a new Hangout client and initialize a new userlist entry.
             try:
-                jh_hangups.hangups_manager.spawn_thread(fromstripped,
+                if jh_hangups.hangups_manager.spawn_thread(fromstripped,
                                                         xmpp_queue,
                                                         refresh_token_filename,
-                                                        oauth_code=oauth_code)
-                hobj = {'user_list': {},
-                        'conv_list': {},
-                        'connected_jids': {fromjid: True}}
-                self.userlist[fromstripped] = hobj
+                                                        oauth_code=oauth_code):
+                    hobj = {'user_list': {},
+                            'conv_list': {},
+                            'connected_jids': {fromjid: True}}
+                    self.userlist[fromstripped] = hobj
 
                 # Send presence transport information.
                 self.jabber.send(Presence(frm=config.jid, to=fromjid))

@@ -40,9 +40,12 @@ class HangupsManager:
 
     def spawn_thread(self, jid, xmpp_queue, refresh_token_filename, oauth_code=""):
         """Create a new Hangouts connection"""
+        if jid in self.hangouts_threads:
+            return None
         thread = HangupsThread(jid, xmpp_queue, refresh_token_filename, oauth_code=oauth_code)
         self.hangouts_threads[jid] = thread
         thread.start()
+        return thread
 
     def get_thread(self, jid):
         """Get a specific Hangouts thread."""
