@@ -1,0 +1,3 @@
+[submodule "lib/hangups"]
+	path = lib/hangups
+	url = https://github.com/tdryer/hangups
