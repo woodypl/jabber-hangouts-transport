@@ -124,7 +124,7 @@ class Dispatcher(PlugIn):
             print(self._pendingExceptions)
             if len(self._pendingExceptions) > 0:
                 _pendingException = self._pendingExceptions.pop()
-                raise _pendingException[0]
+                raise _pendingException[1]
             if data: return len(data)
         return '0'      # It means that nothing is received but link is alive.
 
