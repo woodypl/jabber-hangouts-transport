@@ -69,11 +69,11 @@ class HangupsThread(threading.Thread):
         super().__init__()
 
         self.jid = jid
-        self.refresh_token_filename = refresh_token_filename
+        self.refresh_token_cache = hangups.auth.RefreshTokenCache(refresh_token_filename)
         self.xmpp_queue = xmpp_queue
 
         try:
-            self.cookies = hangups.auth.get_auth(lambda: oauth_code, self.refresh_token_filename)
+            self.cookies = hangups.auth.get_auth(lambda: oauth_code, self.refresh_token_cache)
         except hangups.GoogleAuthError as e:
             raise HangupAuthError('Login failed ({})'.format(e))
 
