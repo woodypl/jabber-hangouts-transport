@@ -17,6 +17,20 @@ def get_oauth_url():
     """Return the URL the user must follow to obtain a refresh token"""
     return OAUTH2_LOGIN_URL
 
+def retrieve_auth_token(filename,username,password,code):
+    class Credentials(object):
+        @staticmethod
+        def get_email():
+            return username
+        @staticmethod
+        def get_password():
+            return password
+        @staticmethod
+        def get_verification_code():
+            return code
+    cache = hangups.auth.RefreshTokenCache(filename)
+    return hangups.auth.get_auth(Credentials(), cache)
+    
 
 def presence_to_status(presence):
     """Convert a pb2 presence object to a presence description string."""
@@ -27,6 +41,7 @@ def presence_to_status(presence):
             if presence.available:
                 status = 'online'
     return status
+
 
 
 class HangupAuthError(Exception):
@@ -98,6 +113,7 @@ class HangupsThread(threading.Thread):
         self.client.on_connect.add_observer(self.on_connect)
         self.client.on_disconnect.add_observer(self.on_disconnect)
         self.client.on_reconnect.add_observer(self.on_reconnect)
+        self.client.on_state_update.add_observer(self.on_state_update)
 
         self.loop.run_until_complete(self.client.connect())
         self.send_message_to_xmpp({'what': 'disconnected'})
@@ -131,6 +147,7 @@ class HangupsThread(threading.Thread):
         conv = None
 
         if message['type'] == 'one_to_one':
+            print(message)
             conv = self.conv_list.get_one_to_one_with_user(message['gaia_id'])
             if conv:
                 segments = hangups.ChatMessageSegment.from_str(message['message'])
@@ -144,7 +161,7 @@ class HangupsThread(threading.Thread):
                                                'message': 'Failed to send message. Reason: {}.'.format(e),
                                                'recipient_jid': message['sender_jid']})
         elif message['type'] == 'group':
-            conv = self.conv_list.get_from_sha1_id(message['conv_id'])
+            conv = self.conv_list.get(message['conv_id'])
             if conv:
                 segments = hangups.ChatMessageSegment.from_str(message['message'])
                 try:
@@ -176,7 +193,7 @@ class HangupsThread(threading.Thread):
     @asyncio.coroutine
     def conversation_history_request(self, message):
         """XMPP asks for history. Fetch and forward it."""
-        conv = self.conv_list.get_from_sha1_id(message['conv_id'])
+        conv = self.conv_list.get(message['conv_id'])
         if conv:
             # Get the latest events
             events = yield from conv.get_n_last_events(50)
@@ -225,7 +242,7 @@ class HangupsThread(threading.Thread):
     @asyncio.coroutine
     def conversation_rename(self, message):
         """XMPP renamed a conversation."""
-        conv = self.conv_list.get_from_sha1_id(message['conv_id'])
+        conv = self.conv_list.get(message['conv_id'])
         if conv and message['new_name'] != '':
             yield from conv.rename(message['new_name'])
 
@@ -262,14 +279,15 @@ class HangupsThread(threading.Thread):
             yield from hangups.build_user_conversation_list(self.client)
         )
 
-        self.user_list.on_presence.add_observer(self.on_presence)
+        #self.user_list.on_presence.add_observer(self.on_presence)
+
         self.conv_list.on_event.add_observer(self.on_event)
         self.conv_list.on_typing.add_observer(self.on_typing)
 
         # Query presence information for user list
         participant_ids = []
         for user_id in self.user_list._user_dict.keys():
-            if user_id.gaia_id == '' or self.user_list._user_dict[user_id].participant_type != 'gaia':
+            if user_id.gaia_id == '':
                 continue
             participant_ids.append(hangouts_pb2.ParticipantId(gaia_id=user_id.gaia_id, chat_id=user_id.chat_id))
 
@@ -279,10 +297,9 @@ class HangupsThread(threading.Thread):
             field_mask=[
                 hangouts_pb2.FIELD_MASK_REACHABLE,
                 hangouts_pb2.FIELD_MASK_AVAILABLE,
-                hangouts_pb2.FIELD_MASK_DEVICE])
+                hangouts_pb2.FIELD_MASK_DEVICE,
+                hangouts_pb2.FIELD_MASK_MOOD])
         presence_response = yield from self.client.query_presence(presence_request)
-        for presence_result in presence_response.presence_result:
-            self.user_list.set_presence_from_presence_result(presence_result)
 
         # Send user list to XMPP
         user_list_dict = {}
@@ -291,14 +308,16 @@ class HangupsThread(threading.Thread):
                 'chat_id': user.id_.chat_id,
                 'gaia_id': user.id_.gaia_id,
                 'first_name': user.first_name,
-                'full_name': user.unique_full_name,
+                'full_name': user.full_name,
                 'is_self': user.is_self,
-                'emails': user.emails._values if user.emails is not None else [],
-                'phones': user.phones._values if user.phones is not None else [],
+                'emails': list(user.emails) if user.emails is not None else [],
                 'photo_url': user.photo_url,
-                'status': presence_to_status(user.presence),
-                'status_message': user.get_mood_message(),
+                'status': 'unknown',
             }
+
+        for presence_result in presence_response.presence_result:
+            user_list_dict[presence_result.user_id.gaia_id]['status'] = presence_to_status(presence_result.presence)
+
         self.send_message_to_xmpp({'what': 'user_list', 'user_list': user_list_dict})
 
         # Send conversation list to XMPP
@@ -318,8 +337,8 @@ class HangupsThread(threading.Thread):
                 conv_name = conv.name
                 if conv_name is None:
                     conv_name = ', '.join(user_list.values())
-                conv_list_dict[conv.id_sha1] = {
-                    'conv_id': conv.id_sha1,
+                conv_list_dict[conv.id_] = {
+                    'conv_id': conv.id_,
                     'topic': conv_name,
                     'user_list': user_list,
                     'self_id': self_gaia_id,
@@ -337,13 +356,33 @@ class HangupsThread(threading.Thread):
     def on_reconnect(self):
         """Hangouts reconnected"""
         self.send_message_to_xmpp({'what': 'connected'})
+        self.send_presence()
+    @asyncio.coroutine
+    def on_state_update(self, state_update):
+        print(state_update)
 
-        # Send presence information for contacts.
-        for user in self.user_list.get_all():
+    @asyncio.coroutine
+    def send_presence(self):
+        participant_ids = []
+        for user_id in self.user_list._user_dict.keys():
+            if user_id.gaia_id == '':
+                continue
+            participant_ids.append(hangouts_pb2.ParticipantId(gaia_id=user_id.gaia_id, chat_id=user_id.chat_id))
+
+        presence_request = hangouts_pb2.QueryPresenceRequest(
+            request_header=self.client.get_request_header(),
+            participant_id=participant_ids,
+            field_mask=[
+                hangouts_pb2.FIELD_MASK_REACHABLE,
+                hangouts_pb2.FIELD_MASK_AVAILABLE,
+                hangouts_pb2.FIELD_MASK_DEVICE,
+                hangouts_pb2.FIELD_MASK_MOOD])
+        presence_response = yield from self.client.query_presence(presence_request)
+        for presence_result in presence_response.presence_result:
             self.send_message_to_xmpp({'what': 'presence',
-                                       'gaia_id': user.id_.gaia_id,
-                                       'status': presence_to_status(user.presence),
-                                       'status_message': user.get_mood_message()})
+                                       'gaia_id': presence_result.user_id.gaia_id,
+                                       'status': presence_to_status(presence_result.presence),
+                                       'status_message': ''})
 
     @asyncio.coroutine
     def on_presence(self, user, presence):
@@ -375,7 +414,7 @@ class HangupsThread(threading.Thread):
             if conv_name is None:
                 conv_name = ', '.join(user_list.values())
             conv_dict = {
-                'conv_id': conv.id_sha1,
+                'conv_id': conv.id_,
                 'topic': conv_name,
                 'user_list': user_list,
                 'self_id': self_gaia_id,
@@ -394,20 +433,20 @@ class HangupsThread(threading.Thread):
             elif conv._conversation.type == hangouts_pb2.CONVERSATION_TYPE_GROUP:
                 self.send_message_to_xmpp({'what': 'chat_message',
                                            'type': 'group',
-                                           'conv_id': conv.id_sha1,
+                                           'conv_id': conv.id_,
                                            'gaia_id': user.id_.gaia_id,
                                            'message': conv_event.text})
         elif isinstance(conv_event, RenameEvent):
             # Conversation was renamed
             if conv._conversation.type == hangouts_pb2.CONVERSATION_TYPE_GROUP:
                 self.send_message_to_xmpp({'what': 'conversation_rename',
-                                           'conv_id': conv.id_sha1,
+                                           'conv_id': conv.id_,
                                            'new_name': conv_event.new_name})
         elif isinstance(conv_event, MembershipChangeEvent):
             # Members joined or left a conversation
             if conv._conversation.type == hangouts_pb2.CONVERSATION_TYPE_GROUP:
                 message = {'what': 'conversation_membership_change',
-                           'conv_id': conv.id_sha1}
+                           'conv_id': conv.id_}
 
                 event_users = [conv.get_user(user_id) for user_id in conv_event.participant_ids]
                 if conv_event.type_ == hangups.MEMBERSHIP_CHANGE_TYPE_JOIN:

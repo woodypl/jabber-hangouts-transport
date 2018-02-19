@@ -566,12 +566,13 @@ class Transport:
                             photo = download_url(self.userlist[fromstripped]['user_list'][gaia_id]['photo_url'])
                             p.setTagData(tag='BINVAL',
                                          val=base64.b64encode(photo).decode())
-                        if len(self.userlist[fromstripped]['user_list'][gaia_id]['phones']) > 0:
+                        """if len(self.userlist[fromstripped]['user_list'][gaia_id]['phones']) > 0:
                             p = v.addChild(name='TEL')
                             p.addChild(name='HOME')
                             p.addChild(name='VOICE')
                             p.addChild(name='NUMBER',
                                        payload=self.userlist[fromstripped]['user_list'][gaia_id]['phones'][0])
+                        """
                         if len(self.userlist[fromstripped]['user_list'][gaia_id]['emails']) > 0:
                             p = v.addChild(name='EMAIL')
                             p.addChild(name='INTERNET')
@@ -599,9 +600,8 @@ class Transport:
             url = jh_hangups.get_oauth_url()
             fromjid = event.getFrom().getStripped()
             query_payload = [Node('instructions',
-                                  payload='Please open this URL in a webbrowser, follow the instruction and copy '
-                                          'the result code here:'),
-                             Node('url', payload=[url])]
+                                  payload='Please provide your Google username, password and verification code:'),
+                            ]
 
             if fromjid in self.userfile:
                 # User is already registered
@@ -609,7 +609,7 @@ class Transport:
                     Node('password', payload=['[your code was consumed]']),
                     Node('registered')]
             else:
-                query_payload += [Node('password')]
+                query_payload += [Node('username'), Node('password'), Node('code')]
 
             m = event.buildReply('result')
             m.setQueryNS(NS_REGISTER)
@@ -628,12 +628,16 @@ class Transport:
 
             # Get input from event.
             query = event.getTag('query')
+            if query.getTag('username'):
+                username = query.getTagData('username')
             if query.getTag('password'):
-                oauth_code = query.getTagData('password')
+                password = query.getTagData('password')
+            if query.getTag('code'):
+                code = query.getTagData('code')
             if query.getTag('remove'):
                 remove = True
 
-            if not remove and oauth_code:
+            if not remove and username and password and code:
                 # User creates/updates registration..
 
                 # If account already exist, fetch its current config:
@@ -642,8 +646,10 @@ class Transport:
                 else:
                     conf = {'subscribed': False, 'conv_aliases': {}}
 
+                filename = self.get_refresh_token_filename(fromstripped)
+                cookies = jh_hangups.retrieve_auth_token(filename, username, password, code)
+
                 # Update account file.
-                conf['oauth_code'] = oauth_code  # I don't even know why we store this, since it cannot be used twice.
                 self.userfile[fromstripped] = conf
                 self.userfile.sync()
 
@@ -956,7 +962,7 @@ class Transport:
                 p = Presence(frm='%s@%s' % (user['gaia_id'], config.jid),
                              to=fromjid,
                              typ='subscribe',
-                             status='Hangouts contact')
+                             status='Hangouts contact: %s' % (user['full_name']))
                 p.addChild(node=Node(NODE_VCARDUPDATE, payload=[Node('nickname', payload=user['full_name'])]))
                 self.jabber.send(p)
                 self.send_presence_from_status(fromjid, '%s@%s' % (user['gaia_id'], config.jid), user['status'])
